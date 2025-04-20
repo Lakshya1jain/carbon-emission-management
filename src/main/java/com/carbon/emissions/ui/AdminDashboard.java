@@ -6,6 +6,14 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.sql.SQLException;
+import java.text.SimpleDateFormat;
+import java.util.List;
+import java.util.Map;
+
+import com.carbon.emissions.CarbonEmissionsDataAccess;
+import com.carbon.emissions.auth.SessionManager;
+import com.carbon.emissions.auth.UserAccount;
 
 /**
  * Dashboard for administrators to manage users and system settings
@@ -16,8 +24,28 @@ public class AdminDashboard extends JFrame {
     private JPanel mainPanel;
     private JTabbedPane tabbedPane;
     
+    // Data access components
+    private CarbonEmissionsDataAccess dataAccess;
+    private DefaultTableModel userTableModel;
+    private JTable userTable;
+    private JTextField searchField;
+    private UserAccount currentUser;
+    
+    // Format for displaying dates
+    private SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+    
     public AdminDashboard(String username) {
         this.username = username;
+        
+        // Initialize data access
+        this.dataAccess = new CarbonEmissionsDataAccess();
+        
+        // Try to get the current user
+        try {
+            this.currentUser = SessionManager.getInstance().getCurrentUser();
+        } catch (Exception e) {
+            System.err.println("Error getting current user: " + e.getMessage());
+        }
         
         // Set up the frame
         setTitle("Admin Dashboard - Carbon Emissions Management");
@@ -27,7 +55,7 @@ public class AdminDashboard extends JFrame {
         
         // Create main panel
         mainPanel = new JPanel(new BorderLayout());
-        mainPanel.setBackground(new Color(240, 248, 255));
+        mainPanel.setBackground(new Color(245, 250, 255));
         
         // Create header
         JPanel headerPanel = createHeaderPanel();
@@ -35,7 +63,7 @@ public class AdminDashboard extends JFrame {
         
         // Create tabbed pane for different sections
         tabbedPane = new JTabbedPane();
-        tabbedPane.setFont(new Font("Arial", Font.BOLD, 14));
+        tabbedPane.setFont(new Font("Segoe UI", Font.BOLD, 14));
         
         // Add tabs
         tabbedPane.addTab("Dashboard", createDashboardPanel());
@@ -47,20 +75,27 @@ public class AdminDashboard extends JFrame {
         
         // Add main panel to frame
         add(mainPanel);
+        
+        // Load initial data
+        refreshUserTable();
+        refreshDashboardStats();
     }
     
     private JPanel createHeaderPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(70, 130, 180)); // Steel blue
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        panel.setBackground(new Color(39, 174, 96)); // Brighter green
+        panel.setBorder(BorderFactory.createEmptyBorder(12, 25, 12, 25));
         
-        JLabel welcomeLabel = new JLabel("Admin Panel - Logged in as " + username);
-        welcomeLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        JLabel welcomeLabel = new JLabel("Admin Dashboard - " + username);
+        welcomeLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
         welcomeLabel.setForeground(Color.WHITE);
         
         JButton logoutButton = new JButton("Logout");
-        logoutButton.setFont(new Font("Arial", Font.BOLD, 12));
-        logoutButton.setBackground(new Color(220, 220, 220));
+        logoutButton.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        logoutButton.setBackground(new Color(255, 255, 255));
+        logoutButton.setForeground(new Color(39, 174, 96));
+        logoutButton.setFocusPainted(false);
+        logoutButton.setBorder(BorderFactory.createEmptyBorder(6, 15, 6, 15));
         logoutButton.setCursor(new Cursor(Cursor.HAND_CURSOR));
         logoutButton.addActionListener(new ActionListener() {
             @Override
@@ -80,19 +115,34 @@ public class AdminDashboard extends JFrame {
         panel.setBackground(new Color(240, 248, 255));
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
         
+        try {
+            // Get user statistics from the database
+            Map<String, Object> userStats = dataAccess.getUserStatistics();
+            
+            // User statistics card with real data
+            int activeUsers = (int) userStats.getOrDefault("activeUsers", 0);
+            int newUsers = (int) userStats.getOrDefault("newUsers", 0);
+            panel.add(createSummaryCard(
+                    "User Statistics", 
+                    activeUsers + " Active Users", 
+                    newUsers + " new users this month",
+                    new Color(70, 130, 180)));
+        } catch (SQLException e) {
+            // Fallback if database error
+            panel.add(createSummaryCard(
+                    "User Statistics", 
+                    "Unable to load", 
+                    "Database error: " + e.getMessage(),
+                    new Color(70, 130, 180)));
+            System.err.println("Error loading user statistics: " + e.getMessage());
+        }
+        
         // System status card
         panel.add(createSummaryCard(
                 "System Status", 
                 "Online", 
                 "All services running normally",
                 new Color(46, 139, 87)));
-        
-        // User statistics card
-        panel.add(createSummaryCard(
-                "User Statistics", 
-                "145 Active Users", 
-                "12 new users this month",
-                new Color(70, 130, 180)));
         
         // Database statistics card
         panel.add(createSummaryCard(
@@ -147,19 +197,49 @@ public class AdminDashboard extends JFrame {
         
         JButton addUserButton = new JButton("Add User");
         styleButton(addUserButton);
+        addUserButton.addActionListener(e -> showAddUserDialog());
         
         JButton editUserButton = new JButton("Edit User");
         styleButton(editUserButton);
+        editUserButton.addActionListener(e -> {
+            int selectedRow = userTable.getSelectedRow();
+            if (selectedRow >= 0) {
+                int userId = (int) userTable.getValueAt(selectedRow, 0);
+                showEditUserDialog(userId);
+            } else {
+                JOptionPane.showMessageDialog(this, 
+                    "Please select a user to edit", 
+                    "No Selection", 
+                    JOptionPane.WARNING_MESSAGE);
+            }
+        });
         
         JButton deleteUserButton = new JButton("Delete User");
         styleButton(deleteUserButton);
         deleteUserButton.setBackground(new Color(178, 34, 34)); // Red for delete
+        deleteUserButton.addActionListener(e -> {
+            int selectedRow = userTable.getSelectedRow();
+            if (selectedRow >= 0) {
+                int userId = (int) userTable.getValueAt(selectedRow, 0);
+                deleteUser(userId);
+            } else {
+                JOptionPane.showMessageDialog(this, 
+                    "Please select a user to delete", 
+                    "No Selection", 
+                    JOptionPane.WARNING_MESSAGE);
+            }
+        });
         
-        JTextField searchField = new JTextField(20);
+        searchField = new JTextField(20);
         searchField.setFont(new Font("Arial", Font.PLAIN, 14));
         
         JButton searchButton = new JButton("Search");
         styleButton(searchButton);
+        searchButton.addActionListener(e -> searchUsers(searchField.getText()));
+        
+        JButton refreshButton = new JButton("Refresh");
+        styleButton(refreshButton);
+        refreshButton.addActionListener(e -> refreshUserTable());
         
         controlsPanel.add(addUserButton);
         controlsPanel.add(editUserButton);
@@ -167,25 +247,27 @@ public class AdminDashboard extends JFrame {
         controlsPanel.add(Box.createHorizontalStrut(30));
         controlsPanel.add(searchField);
         controlsPanel.add(searchButton);
+        controlsPanel.add(Box.createHorizontalStrut(10));
+        controlsPanel.add(refreshButton);
         
         // Create user table
-        String[] columnNames = {"ID", "Username", "Email", "Role", "Status", "Last Login"};
-        Object[][] data = {
-                {"1", "johndoe", "john@example.com", "User", "Active", "2023-06-01 10:15 AM"},
-                {"2", "janedoe", "jane@example.com", "Analyst", "Active", "2023-06-02 09:30 AM"},
-                {"3", "admin", "admin@example.com", "Admin", "Active", "2023-06-02 11:45 AM"},
-                {"4", "marksmith", "mark@example.com", "User", "Inactive", "2023-05-15 03:20 PM"},
-                {"5", "sarahlee", "sarah@example.com", "Analyst", "Active", "2023-06-01 02:10 PM"}
-        };
-        
-        DefaultTableModel tableModel = new DefaultTableModel(data, columnNames) {
+        String[] columnNames = {"ID", "Username", "Email", "Full Name", "Role", "Status", "Last Login"};
+        userTableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false; // Make table non-editable
             }
+            
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                if (columnIndex == 0) {
+                    return Integer.class;
+                }
+                return String.class;
+            }
         };
         
-        JTable userTable = new JTable(tableModel);
+        userTable = new JTable(userTableModel);
         userTable.setFont(new Font("Arial", Font.PLAIN, 14));
         userTable.setRowHeight(25);
         userTable.getTableHeader().setFont(new Font("Arial", Font.BOLD, 14));
@@ -198,6 +280,393 @@ public class AdminDashboard extends JFrame {
         panel.add(tableScrollPane, BorderLayout.CENTER);
         
         return panel;
+    }
+    
+    /**
+     * Populate the user table with data from the database
+     */
+    private void refreshUserTable() {
+        try {
+            // Clear existing data
+            userTableModel.setRowCount(0);
+            
+            // Get users from database
+            List<UserAccount> users = dataAccess.getAllUsers();
+            
+            // Add users to table
+            for (UserAccount user : users) {
+                Object[] rowData = {
+                    user.getUserId(),
+                    user.getUsername(),
+                    user.getEmail(),
+                    user.getFullName(),
+                    user.getRoleName(),
+                    user.isActive() ? "Active" : "Inactive",
+                    user.getLastLogin() != null ? dateFormat.format(user.getLastLogin()) : "Never"
+                };
+                userTableModel.addRow(rowData);
+            }
+            
+            // Update dashboard statistics
+            refreshDashboardStats();
+            
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, 
+                "Error loading users: " + e.getMessage(), 
+                "Database Error", 
+                JOptionPane.ERROR_MESSAGE);
+            System.err.println("Error loading users: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Refresh dashboard statistics from the database
+     */
+    private void refreshDashboardStats() {
+        // This will be called from other methods when data changes
+        // We'll recreate the dashboard panel to reflect the new data
+        if (tabbedPane != null) {
+            tabbedPane.setComponentAt(0, createDashboardPanel());
+        }
+    }
+    
+    /**
+     * Search for users by the given search term
+     */
+    private void searchUsers(String searchTerm) {
+        if (searchTerm == null || searchTerm.trim().isEmpty()) {
+            refreshUserTable();
+            return;
+        }
+        
+        try {
+            // Clear existing data
+            userTableModel.setRowCount(0);
+            
+            // Get matching users from database
+            List<UserAccount> users = dataAccess.searchUsers(searchTerm);
+            
+            // Add users to table
+            for (UserAccount user : users) {
+                Object[] rowData = {
+                    user.getUserId(),
+                    user.getUsername(),
+                    user.getEmail(),
+                    user.getFullName(),
+                    user.getRoleName(),
+                    user.isActive() ? "Active" : "Inactive",
+                    user.getLastLogin() != null ? dateFormat.format(user.getLastLogin()) : "Never"
+                };
+                userTableModel.addRow(rowData);
+            }
+            
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, 
+                "Error searching users: " + e.getMessage(), 
+                "Database Error", 
+                JOptionPane.ERROR_MESSAGE);
+            System.err.println("Error searching users: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Show dialog to add a new user
+     */
+    private void showAddUserDialog() {
+        // Create the dialog
+        JDialog dialog = new JDialog(this, "Add New User", true);
+        dialog.setSize(450, 400);
+        dialog.setLocationRelativeTo(this);
+        dialog.setLayout(new BorderLayout());
+        
+        // Create form panel
+        JPanel formPanel = new JPanel(new GridLayout(0, 2, 10, 10));
+        formPanel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        
+        // Username field
+        JLabel usernameLabel = new JLabel("Username:");
+        JTextField usernameField = new JTextField(20);
+        formPanel.add(usernameLabel);
+        formPanel.add(usernameField);
+        
+        // Password field
+        JLabel passwordLabel = new JLabel("Password:");
+        JPasswordField passwordField = new JPasswordField(20);
+        formPanel.add(passwordLabel);
+        formPanel.add(passwordField);
+        
+        // Email field
+        JLabel emailLabel = new JLabel("Email:");
+        JTextField emailField = new JTextField(20);
+        formPanel.add(emailLabel);
+        formPanel.add(emailField);
+        
+        // First name field
+        JLabel firstNameLabel = new JLabel("First Name:");
+        JTextField firstNameField = new JTextField(20);
+        formPanel.add(firstNameLabel);
+        formPanel.add(firstNameField);
+        
+        // Last name field
+        JLabel lastNameLabel = new JLabel("Last Name:");
+        JTextField lastNameField = new JTextField(20);
+        formPanel.add(lastNameLabel);
+        formPanel.add(lastNameField);
+        
+        // Role selector
+        JLabel roleLabel = new JLabel("Role:");
+        JComboBox<String> roleComboBox = new JComboBox<>(new String[]{"Admin", "NormalUser"});
+        formPanel.add(roleLabel);
+        formPanel.add(roleComboBox);
+        
+        // Button panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton saveButton = new JButton("Save");
+        JButton cancelButton = new JButton("Cancel");
+        
+        buttonPanel.add(cancelButton);
+        buttonPanel.add(saveButton);
+        
+        // Add action listeners
+        saveButton.addActionListener(e -> {
+            try {
+                // Validate fields
+                String username = usernameField.getText().trim();
+                String password = new String(passwordField.getPassword());
+                String email = emailField.getText().trim();
+                String firstName = firstNameField.getText().trim();
+                String lastName = lastNameField.getText().trim();
+                String roleName = (String) roleComboBox.getSelectedItem();
+                
+                if (username.isEmpty() || password.isEmpty() || email.isEmpty() || 
+                    firstName.isEmpty() || lastName.isEmpty()) {
+                    JOptionPane.showMessageDialog(dialog, 
+                        "All fields are required", 
+                        "Validation Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+                
+                // Register the new user
+                UserAccount newUser = UserAccount.register(
+                    username, password, email, firstName, lastName, roleName);
+                
+                if (newUser != null) {
+                    JOptionPane.showMessageDialog(dialog, 
+                        "User created successfully", 
+                        "Success", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                    refreshUserTable();
+                    dialog.dispose();
+                } else {
+                    JOptionPane.showMessageDialog(dialog, 
+                        "Failed to create user. Username or email may already exist.", 
+                        "Registration Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (SQLException ex) {
+                JOptionPane.showMessageDialog(dialog, 
+                    "Database error: " + ex.getMessage(), 
+                    "Error", 
+                    JOptionPane.ERROR_MESSAGE);
+                System.err.println("Error creating user: " + ex.getMessage());
+            }
+        });
+        
+        cancelButton.addActionListener(e -> dialog.dispose());
+        
+        // Add panels to dialog
+        dialog.add(formPanel, BorderLayout.CENTER);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+        
+        // Show dialog
+        dialog.setVisible(true);
+    }
+    
+    /**
+     * Show dialog to edit an existing user
+     */
+    private void showEditUserDialog(int userId) {
+        try {
+            // Get all users to find the one to edit
+            List<UserAccount> allUsers = dataAccess.getAllUsers();
+            UserAccount userToEdit = null;
+            
+            for (UserAccount user : allUsers) {
+                if (user.getUserId() == userId) {
+                    userToEdit = user;
+                    break;
+                }
+            }
+            
+            if (userToEdit == null) {
+                JOptionPane.showMessageDialog(this, 
+                    "User not found", 
+                    "Error", 
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            
+            // Create the dialog
+            JDialog dialog = new JDialog(this, "Edit User", true);
+            dialog.setSize(450, 350);
+            dialog.setLocationRelativeTo(this);
+            dialog.setLayout(new BorderLayout());
+            
+            // Create form panel
+            JPanel formPanel = new JPanel(new GridLayout(0, 2, 10, 10));
+            formPanel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+            
+            // Username field (disabled as it shouldn't change)
+            JLabel usernameLabel = new JLabel("Username:");
+            JTextField usernameField = new JTextField(userToEdit.getUsername());
+            usernameField.setEditable(false);
+            formPanel.add(usernameLabel);
+            formPanel.add(usernameField);
+            
+            // Email field
+            JLabel emailLabel = new JLabel("Email:");
+            JTextField emailField = new JTextField(userToEdit.getEmail());
+            formPanel.add(emailLabel);
+            formPanel.add(emailField);
+            
+            // First name field
+            JLabel firstNameLabel = new JLabel("First Name:");
+            JTextField firstNameField = new JTextField(userToEdit.getFirstName());
+            formPanel.add(firstNameLabel);
+            formPanel.add(firstNameField);
+            
+            // Last name field
+            JLabel lastNameLabel = new JLabel("Last Name:");
+            JTextField lastNameField = new JTextField(userToEdit.getLastName());
+            formPanel.add(lastNameLabel);
+            formPanel.add(lastNameField);
+            
+            // Role selector
+            JLabel roleLabel = new JLabel("Role:");
+            JComboBox<String> roleComboBox = new JComboBox<>(new String[]{"Admin", "NormalUser"});
+            roleComboBox.setSelectedItem(userToEdit.getRoleName());
+            formPanel.add(roleLabel);
+            formPanel.add(roleComboBox);
+            
+            // Status selector
+            JLabel statusLabel = new JLabel("Status:");
+            JComboBox<String> statusComboBox = new JComboBox<>(new String[]{"Active", "Inactive"});
+            statusComboBox.setSelectedItem(userToEdit.isActive() ? "Active" : "Inactive");
+            formPanel.add(statusLabel);
+            formPanel.add(statusComboBox);
+            
+            // Button panel
+            JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+            JButton saveButton = new JButton("Save");
+            JButton cancelButton = new JButton("Cancel");
+            
+            buttonPanel.add(cancelButton);
+            buttonPanel.add(saveButton);
+            
+            // Add action listeners
+            final UserAccount finalUserToEdit = userToEdit;
+            saveButton.addActionListener(e -> {
+                try {
+                    // Validate fields
+                    String email = emailField.getText().trim();
+                    String firstName = firstNameField.getText().trim();
+                    String lastName = lastNameField.getText().trim();
+                    String roleName = (String) roleComboBox.getSelectedItem();
+                    boolean isActive = statusComboBox.getSelectedItem().equals("Active");
+                    
+                    if (email.isEmpty() || firstName.isEmpty() || lastName.isEmpty()) {
+                        JOptionPane.showMessageDialog(dialog, 
+                            "All fields are required", 
+                            "Validation Error", 
+                            JOptionPane.ERROR_MESSAGE);
+                        return;
+                    }
+                    
+                    // Get role ID
+                    int roleId = UserAccount.getRoleId(roleName);
+                    
+                    // Update the user
+                    boolean updated = dataAccess.updateUser(
+                        finalUserToEdit.getUserId(), email, firstName, lastName, roleId, isActive);
+                    
+                    if (updated) {
+                        JOptionPane.showMessageDialog(dialog, 
+                            "User updated successfully", 
+                            "Success", 
+                            JOptionPane.INFORMATION_MESSAGE);
+                        refreshUserTable();
+                        dialog.dispose();
+                    } else {
+                        JOptionPane.showMessageDialog(dialog, 
+                            "Failed to update user.", 
+                            "Update Error", 
+                            JOptionPane.ERROR_MESSAGE);
+                    }
+                } catch (SQLException ex) {
+                    JOptionPane.showMessageDialog(dialog, 
+                        "Database error: " + ex.getMessage(), 
+                        "Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                    System.err.println("Error updating user: " + ex.getMessage());
+                }
+            });
+            
+            cancelButton.addActionListener(e -> dialog.dispose());
+            
+            // Add panels to dialog
+            dialog.add(formPanel, BorderLayout.CENTER);
+            dialog.add(buttonPanel, BorderLayout.SOUTH);
+            
+            // Show dialog
+            dialog.setVisible(true);
+            
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, 
+                "Error loading user data: " + e.getMessage(), 
+                "Database Error", 
+                JOptionPane.ERROR_MESSAGE);
+            System.err.println("Error loading user data: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Delete a user
+     */
+    private void deleteUser(int userId) {
+        // Confirm deletion
+        int response = JOptionPane.showConfirmDialog(
+            this,
+            "Are you sure you want to delete this user?",
+            "Confirm Deletion",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        );
+        
+        if (response == JOptionPane.YES_OPTION) {
+            try {
+                boolean deleted = dataAccess.deleteUser(userId);
+                
+                if (deleted) {
+                    JOptionPane.showMessageDialog(this, 
+                        "User deleted successfully", 
+                        "Success", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                    refreshUserTable();
+                } else {
+                    JOptionPane.showMessageDialog(this, 
+                        "Failed to delete user.", 
+                        "Deletion Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(this, 
+                    "Database error: " + e.getMessage(), 
+                    "Error", 
+                    JOptionPane.ERROR_MESSAGE);
+                System.err.println("Error deleting user: " + e.getMessage());
+            }
+        }
     }
     
     private JPanel createSystemSettingsPanel() {
@@ -363,25 +832,25 @@ public class AdminDashboard extends JFrame {
     }
     
     private void styleButton(JButton button) {
-        button.setFont(new Font("Arial", Font.BOLD, 14));
-        button.setBackground(new Color(70, 130, 180)); // Steel blue
-        button.setForeground(Color.WHITE);
+        button.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        button.setBackground(new Color(39, 174, 96)); // Brighter green
+        button.setForeground(Color.BLACK);
         button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createEmptyBorder(8, 20, 8, 20));
+        button.setBorder(BorderFactory.createEmptyBorder(10, 24, 10, 24));
         button.setCursor(new Cursor(Cursor.HAND_CURSOR));
     }
     
     private void logout() {
-        int response = JOptionPane.showConfirmDialog(
-                this,
-                "Are you sure you want to logout?",
-                "Confirm Logout",
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.QUESTION_MESSAGE);
-        
-        if (response == JOptionPane.YES_OPTION) {
+        try {
+            SessionManager.getInstance().logout();
+            MainLoginFrame loginFrame = new MainLoginFrame();
+            loginFrame.setVisible(true);
             this.dispose();
-            new MainLoginFrame().setVisible(true);
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this,
+                    "Error during logout: " + e.getMessage(),
+                    "Logout Error",
+                    JOptionPane.ERROR_MESSAGE);
         }
     }
 } 
